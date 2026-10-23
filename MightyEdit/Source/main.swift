@@ -1,0 +1,1312 @@
+import AppKit
+import ApplicationServices
+import Carbon
+
+final class PaletteDocumentView: NSView {
+    override var isFlipped: Bool { true }
+}
+
+class Palette: NSPanel {
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
+}
+
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+    let autoShow = AppAutoShow()
+    var targetSession = PaletteTargetSession(ownPID: ProcessInfo.processInfo.processIdentifier)
+    let settingsViews = PaletteSettingsViews()
+    var paletteGroups: [(name: String, box: NSBox, grid: ResponsiveButtonGrid)] = []
+    var panel: Palette!
+    var displayItems: [NSMenuItem] = []
+    var displayRow: NSStackView!
+    var utilityRow: NSStackView!
+    var headerText: NSView!
+    var headerIconSize: [NSLayoutConstraint] = []
+    var toolbarInsets: [NSLayoutConstraint] = []
+    var compactConstraints: [NSLayoutConstraint] = []
+    var regularConstraints: [NSLayoutConstraint] = []
+    var compactLayout: Bool?
+    var columnInsets: [NSLayoutConstraint] = []
+    var statusWidths: [NSLayoutConstraint] = []
+    let displayPicker = NSPopUpButton()
+    let profilePicker = NSPopUpButton()
+    var paletteButtons: [PaletteButton] = []
+    var buttonGrids: [ResponsiveButtonGrid] = []
+    var typographyPanel: TypographyPanel?
+    var typographyOptions = TypographyOption.allCases
+    var wrapPanel: WrapPanel?
+    var affixPanel: LineToolsPanel?
+    var countPanel: LineToolsPanel?
+    var linePrefix = ""
+    var lineSuffix = ""
+    var wrapCount = 40
+    var splitPanel: SplitLinesPanel?
+    var splitSeparator = ""
+    var splitKeepsSeparator = false
+    var splitPrefix = ""
+    /// 日付スペシャル: the selection the menu was built from and the chosen candidate.
+    private var dateChoice: (source: String, result: String)?
+    var specialPanel: SpecialListPanel?
+    var statusItem: NSStatusItem!
+    let message = NSTextField(wrappingLabelWithString: L("app.ready"))
+    let target = NSTextField(labelWithString: "")
+    var timer: Timer?
+    var busy = false
+    var pendingTransforms: [(tag: Int, pid: pid_t)] = []
+    var shortcuts: GlobalShortcuts?
+    var paletteShortcut: PaletteShortcut?
+    var wasTrusted: Bool?
+    lazy var permissionButton = NSButton(title: L("menu.openAccessibility"), target: self, action: #selector(openPermission))
+    var copyOnly = UserDefaults.standard.bool(forKey: "copyOnly")
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        defer { DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            MenuBarPresence.shared.install(name: "MightyEdit", symbol: "text.alignleft", existing: self.statusItem,
+                show: { [weak self] in self?.showPalette() },
+                settings: { [weak self] in self?.showPreferences() },
+                help: { [weak self] in LocalHelp.shared.show() })
+        } }
+        DispatchQueue.main.async { LocalHelp.shared.install() }
+        NSApp.setActivationPolicy(.accessory)
+        WindowActivationPolicy.install()
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        statusItem.button?.image = NSImage(systemSymbolName: "textformat", accessibilityDescription: "MightyEdit")
+        let menu = NSMenu()
+        menu.addItem(withTitle: L("menu.openMainWindow"), action: #selector(showPalette), keyEquivalent: "")
+        menu.addItem(withTitle: L("menu.hidePalette"), action: #selector(hidePalette), keyEquivalent: "")
+        menu.addItem(withTitle: L("menu.settings"), action: #selector(showPreferences), keyEquivalent: ",")
+        menu.addItem(.separator())
+        let copy = menu.addItem(withTitle: L("menu.copyOnly"), action: #selector(toggleCopy(_:)), keyEquivalent: "")
+        copy.state = copyOnly ? .on : .off
+        menu.addItem(withTitle: L("menu.openAccessibility"), action: #selector(openPermission), keyEquivalent: "")
+        menu.addItem(withTitle: L("menu.revealApp"), action: #selector(revealApplication), keyEquivalent: "")
+        menu.addItem(.separator())
+        for item in menu.items { item.target = self }
+        // Help submenu: app help and the note article (BASELINE「メニューの共通構成」).
+        let helpMenu = NSMenu(title: L("help"))
+        helpMenu.addItem(withTitle: L("menu.help"), action: #selector(LocalHelp.show), keyEquivalent: "").target = LocalHelp.shared
+        MainActor.assumeIsolated { HelpLinks.addNoteItem(to: helpMenu) }
+        let helpRoot = menu.addItem(withTitle: L("help"), action: nil, keyEquivalent: "")
+        menu.setSubmenu(helpMenu, for: helpRoot)
+        // Quit is always the last status-menu item (BASELINE: nothing below Quit).
+        menu.addItem(.separator())
+        menu.addItem(withTitle: L("menu.quit"), action: #selector(quit), keyEquivalent: "q").target = self
+        let display = NSMenu(title: L("menu.buttonDisplay"))
+        for mode in PaletteDisplayMode.allCases {
+            let item = display.addItem(withTitle: mode.title, action: #selector(changeDisplay(_:)), keyEquivalent: "")
+            item.target = self
+            item.tag = mode.rawValue
+            item.state = mode == .saved ? .on : .off
+            displayItems.append(item)
+        }
+        let displayRoot = NSMenuItem(title: L("menu.buttonDisplay"), action: nil, keyEquivalent: "")
+        displayRoot.submenu = display
+        menu.insertItem(displayRoot, at: 2)
+        statusItem.menu = menu
+
+        let defaults: [TextTransform: Int] = [.minify: 28, .sum: 29, .join: 26, .joinAll: 27, .number: 1, .circled: 3, .alphabet: 4, .bullet: 6, .markdown: 7,
+                                             .addCommas: 10, .removeCommas: 11, .dateSpecial: 12, .bracketAlphabet: 13,
+                                             .invertSign: HotkeyBinding(key: 27, modifiers: UInt32(controlKey)).encoded]
+        // 0.2.17: ⌃⌥⌘Y, palette-only by default (HotkeyScope.paletteDefaults). ⌃⌥⌘D until 0.2.14 was also CommandDee's
+        // palette key (both apps received it); ⌃⌥⌘V in 0.2.16 met a Keyboard Maestro macro. A key set by the user is kept.
+        let displayShortcut = (id: 10000, title: L("hotkey.toggleDisplay"), digit: HotkeyBinding(key: 16, modifiers: UInt32(cmdKey | controlKey | optionKey)).encoded)
+        shortcuts = GlobalShortcuts(actions: [displayShortcut] + TextTransform.allCases.map { ($0.rawValue, $0.title, defaults[$0] ?? -1) }) { [weak self] id in
+            guard let self else { return }
+            if id == 10000 { self.setDisplay(PaletteDisplayMode.saved.next); return }
+            // A direct transform hotkey targets the current editor, independently
+            // of the app previously bound to the visible palette.
+            guard let front = NSWorkspace.shared.frontmostApplication,
+                  front.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return }
+            // Re-check at key release: never act on an excluded app (B21).
+            guard !isExcludedApp(front) else { self.message.stringValue = L("excluded.reason"); return }
+            self.targetSession.bind(frontPID: front.processIdentifier)
+            if id == TextTransform.affixLines.rawValue { self.showAffixPanel(); return }
+            if id == TextTransform.wrapLines.rawValue { self.showWrapPanel(); return }
+            if id == TextTransform.splitAtText.rawValue { self.showSplitPanel(); return }
+            if id == TextTransform.specialTypography.rawValue { self.showTypography(); return }
+            let sender = NSButton()
+            sender.tag = id
+            self.transform(sender)
+        }
+        let mainMenu = NSApp.mainMenu ?? NSMenu()
+        let applicationItem = NSMenuItem()
+        let applicationMenu = NSMenu(title: "MightyEdit")
+        let about = applicationMenu.addItem(withTitle: L("menu.about"), action: #selector(showAbout), keyEquivalent: "")
+        about.target = self
+        applicationMenu.addItem(.separator())
+        let settings = applicationMenu.addItem(withTitle: L("menu.settings"), action: #selector(showPreferences), keyEquivalent: ",")
+        settings.target = self
+        applicationMenu.addItem(.separator())
+        // Updates (Shared/Updater): 準備中 and no network access until a feed and key are configured.
+        #if DIRECT_UPDATES && !APP_STORE
+        MainActor.assumeIsolated { AppUpdates.shared.addMenuItems(to: applicationMenu) }
+        #endif
+        // Standard commands in BASELINE order: Services / Hide / Hide Others / Show All.
+        let servicesMenu = NSMenu(title: L("menu.services"))
+        applicationMenu.addItem(withTitle: L("menu.services"), action: nil, keyEquivalent: "").submenu = servicesMenu
+        NSApp.servicesMenu = servicesMenu
+        applicationMenu.addItem(.separator())
+        applicationMenu.addItem(withTitle: L("menu.hideApp"), action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+        applicationMenu.addItem(withTitle: L("menu.hideOthers"), action: #selector(NSApplication.hideOtherApplications(_:)), keyEquivalent: "h")
+            .keyEquivalentModifierMask = [.command, .option]
+        applicationMenu.addItem(withTitle: L("menu.showAll"), action: #selector(NSApplication.unhideAllApplications(_:)), keyEquivalent: "")
+        applicationMenu.addItem(.separator())
+        let quitItem = applicationMenu.addItem(withTitle: L("menu.quit"), action: #selector(quit), keyEquivalent: "q")
+        quitItem.target = self
+        applicationItem.submenu = applicationMenu
+        mainMenu.insertItem(applicationItem, at: 0)
+        // File menu: reopen the palette (main window) even after it was closed.
+        let fileItem = NSMenuItem(title: L("menu.file"), action: nil, keyEquivalent: "")
+        let fileMenu = NSMenu(title: L("menu.file"))
+        let openMain = fileMenu.addItem(withTitle: L("menu.openMainWindow"), action: #selector(showPalette), keyEquivalent: "0")
+        openMain.keyEquivalentModifierMask = [.command]
+        openMain.target = self
+        fileMenu.addItem(.separator())
+        fileMenu.addItem(withTitle: L("menu.closeWindow"), action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        fileItem.submenu = fileMenu
+        mainMenu.insertItem(fileItem, at: 1)
+        // Standard edit commands for text fields such as the line-tools panel.
+        let editItem = NSMenuItem(title: L("menu.edit"), action: nil, keyEquivalent: "")
+        let editMenu = NSMenu(title: L("menu.edit"))
+        editMenu.addItem(withTitle: L("menu.undo"), action: Selector(("undo:")), keyEquivalent: "z")
+        editMenu.addItem(withTitle: L("menu.redo"), action: Selector(("redo:")), keyEquivalent: "Z")
+        editMenu.addItem(.separator())
+        editMenu.addItem(withTitle: L("menu.cut"), action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        editMenu.addItem(withTitle: L("menu.copy"), action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        editMenu.addItem(withTitle: L("menu.paste"), action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        editMenu.addItem(withTitle: L("menu.selectAll"), action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        editItem.submenu = editMenu
+        mainMenu.insertItem(editItem, at: 2)
+        // Window menu (before Help, which LocalHelp appends later): BASELINE「メニューの共通構成」.
+        let windowItem = NSMenuItem(title: L("menu.window"), action: nil, keyEquivalent: "")
+        let windowMenu = NSMenu(title: L("menu.window"))
+        windowMenu.addItem(withTitle: L("menu.minimize"), action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "")
+        windowMenu.addItem(withTitle: L("menu.zoom"), action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
+        windowMenu.addItem(.separator())
+        windowMenu.addItem(withTitle: L("menu.bringAllToFront"), action: #selector(NSApplication.arrangeInFront(_:)), keyEquivalent: "")
+        windowItem.submenu = windowMenu
+        mainMenu.insertItem(windowItem, at: 3)
+        NSApp.windowsMenu = windowMenu
+        NSApp.mainMenu = mainMenu
+        let shortcutItem = NSMenuItem(title: L("menu.hotkeys"), action: nil, keyEquivalent: "")
+        shortcutItem.submenu = shortcuts?.menu
+        menu.insertItem(shortcutItem, at: 3)
+
+        panel = Palette(contentRect: NSRect(x: 0, y: 0, width: 380, height: 642),
+                        styleMask: [.titled, .closable, .miniaturizable, .resizable, .nonactivatingPanel, .utilityWindow], backing: .buffered, defer: false)
+        panel.title = ""
+        // Listed in the Window menu so a minimized palette can be brought back from there too.
+        panel.isExcludedFromWindowsMenu = false
+        panel.contentMinSize = NSSize(width: PaletteDisplayMode.saved == .both ? 280 : (PaletteDisplayMode.saved == .iconOnly ? 72 : 180), height: 300)
+        panel.minSize = NSSize(width: panel.contentMinSize.width, height: 322)
+        panel.delegate = self
+        panel.isFloatingPanel = true
+        panel.level = .floating
+        panel.hidesOnDeactivate = false
+        panel.becomesKeyOnlyIfNeeded = true
+        panel.isReleasedWhenClosed = false
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        panel.setFrameAutosaveName("TextPalettePosition")
+        let content = NSView()
+        AppSurface.install(in: content)
+        panel.contentView = content
+        let settingsButton = NSButton(title: L("menu.settings"), target: self, action: #selector(showPreferences))
+        settingsButton.image = NSImage(systemSymbolName: "gearshape", accessibilityDescription: L("settings.window"))
+        settingsButton.toolTip = L("tip.settings")
+        settingsButton.bezelStyle = .rounded
+        settingsButton.imagePosition = .imageLeading
+        settingsButton.font = .systemFont(ofSize: 11)
+        settingsButton.controlSize = .small
+        settingsButton.refusesFirstResponder = true
+        settingsButton.setAccessibilityLabel(settingsButton.title)
+        utilityRow = NSStackView(views: [settingsButton])
+        utilityRow.spacing = 8
+        displayRow = NSStackView(views: [displayPicker, profilePicker])
+        displayRow.spacing = 6
+        let header = appHeader(L("header.title"), subtitle: L("header.subtitle"), size: 32)
+        headerText = header.arrangedSubviews[1]
+        headerIconSize = (header.arrangedSubviews[0] as! NSStackView).arrangedSubviews[0].constraints.filter { $0.firstAttribute == .width || $0.firstAttribute == .height }
+        let toolbar = NSStackView(views: [header, displayRow])
+        toolbar.orientation = .vertical
+        toolbar.alignment = .leading
+        toolbar.spacing = 6
+        toolbar.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(toolbar)
+        utilityRow.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(utilityRow)
+        displayPicker.addItems(withTitles: PaletteDisplayMode.allCases.map(\.title))
+        displayPicker.selectItem(at: PaletteDisplayMode.saved.rawValue)
+        displayPicker.target = self
+        displayPicker.action = #selector(pickDisplay(_:))
+        displayPicker.setAccessibilityLabel(L("menu.buttonDisplay"))
+        profilePicker.addItems(withTitles: PaletteProfile.allCases.map(\.title))
+        profilePicker.selectItem(at: PaletteProfile.allCases.firstIndex(of: .saved)!)
+        profilePicker.target = self
+        profilePicker.action = #selector(pickProfile(_:))
+        profilePicker.setAccessibilityLabel(L("ax.profilePicker"))
+        for picker in [displayPicker, profilePicker] {
+            picker.refusesFirstResponder = true
+            picker.font = .systemFont(ofSize: 11)
+            picker.controlSize = .small
+        }
+        toolbarInsets = [toolbar.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 12),
+                         toolbar.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -12)]
+        NSLayoutConstraint.activate(toolbarInsets)
+        NSLayoutConstraint.activate([
+            header.widthAnchor.constraint(equalTo: toolbar.widthAnchor),
+            toolbar.topAnchor.constraint(equalTo: content.topAnchor, constant: 10)
+        ])
+        let scroll = NSScrollView()
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
+        scroll.drawsBackground = false
+        content.addSubview(scroll)
+        NSLayoutConstraint.activate([
+            scroll.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            utilityRow.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 12),
+            utilityRow.trailingAnchor.constraint(lessThanOrEqualTo: content.trailingAnchor, constant: -12)
+        ])
+        regularConstraints = [
+            utilityRow.topAnchor.constraint(equalTo: toolbar.bottomAnchor, constant: 6),
+            scroll.topAnchor.constraint(equalTo: utilityRow.bottomAnchor, constant: 4),
+            scroll.bottomAnchor.constraint(equalTo: content.bottomAnchor)
+        ]
+        compactConstraints = [
+            utilityRow.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -10),
+            scroll.topAnchor.constraint(equalTo: toolbar.bottomAnchor, constant: 4),
+            scroll.bottomAnchor.constraint(equalTo: utilityRow.topAnchor, constant: -8)
+        ]
+        NSLayoutConstraint.activate(regularConstraints)
+        let document = PaletteDocumentView()
+        document.translatesAutoresizingMaskIntoConstraints = false
+        scroll.documentView = document
+        document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor).isActive = true
+        let column = NSStackView()
+        column.orientation = .vertical
+        column.alignment = .leading
+        column.spacing = 10
+        column.translatesAutoresizingMaskIntoConstraints = false
+        document.addSubview(column)
+        target.font = .systemFont(ofSize: 11, weight: .medium)
+        target.textColor = .secondaryLabelColor
+        column.addArrangedSubview(target)
+        let symbols = ["arrow.turn.up.left", "list.number", "list.bullet", "text.alignleft", "text.badge.minus", "1.circle", "a.square", "plus.circle", "minus.circle", "line.3.horizontal.decrease", "arrow.up.and.down.text.horizontal", "plus.circle", "minus.circle", "number", "a.square", "arrow.down.right.and.arrow.up.left", "arrow.triangle.merge", "textformat.abc", "textformat", "arrow.left.and.right.righttriangle.left.righttriangle.right", "arrow.left.and.right", "sum", "textformat.size.larger", "textformat.size.smaller", "textformat.abc", "textformat"]
+        let extraSymbols: [TextTransform: String] = [.trimLineEdges: "text.alignleft", .sortLineLength: "arrow.up.arrow.down", .countText: "number", .affixLines: "text.append", .beautify: "chevron.left.forwardslash.chevron.right", .minifyBody: "scissors", .sortLines: "arrow.up.arrow.down", .uniqueLines: "doc.on.doc", .joinWestern: "text.word.spacing", .wrapLines: "text.insert", .splitAtText: "scissors", .randomLines: "shuffle", .toggleDateFormat: "calendar", .camelCase: "textformat.abc", .invertSign: "plusminus", .dateSpecial: "calendar.badge.clock", .dateSpecialPadded: "calendar.badge.plus"]
+        let groups = PaletteConfiguration.groups
+        for (title, operations) in groups {
+            var buttons: [PaletteButton] = []
+            for operation in operations {
+                    let button = PaletteButton(frame: .zero)
+                    button.title = operation.title
+                    button.target = self
+                    button.action = operation == .affixLines ? #selector(showAffixPanel) : (operation == .wrapLines ? #selector(showWrapPanel) : (operation == .splitAtText ? #selector(showSplitPanel) : #selector(transform(_:))))
+                    button.tag = operation.rawValue
+                    button.image = NSImage(systemSymbolName: extraSymbols[operation] ?? (symbols.indices.contains(operation.rawValue) ? symbols[operation.rawValue] : "calendar"), accessibilityDescription: nil)?.withSymbolConfiguration(.init(pointSize: 20, weight: .regular))
+                    button.imagePosition = .imageAbove
+                    configureDisplay(button)
+                    switch operation {
+                    case .trimLineEdges: button.toolTip = L("tip.trimLineEdges")
+                    case .sortLineLength: button.toolTip = L("tip.sortLineLength")
+                    case .countText: button.toolTip = L("tip.countText")
+                    case .affixLines: button.toolTip = L("tip.affixLines")
+                    case .removeDatePadding, .dateToCompact, .dateToISO, .dateToJapanese, .dateToEra, .dateToGregorian, .removeDateYear, .addDateYear, .weekdayShort, .weekdayLong:
+                        button.toolTip = L("tip.date")
+                    case .narrowAlphanumerics: button.toolTip = L("tip.narrowAlphanumerics")
+                    case .widenKana: button.toolTip = L("tip.widenKana")
+                    case .removeJapaneseSpaces: button.toolTip = L("tip.removeJapaneseSpaces")
+                    case .addJapaneseSpaces: button.toolTip = L("tip.addJapaneseSpaces")
+                    case .fullwidthWestern: button.toolTip = L("tip.fullwidthWestern")
+                    case .halfwidthWestern: button.toolTip = L("tip.halfwidthWestern")
+                    case .capitalizeWords: button.toolTip = L("tip.capitalizeWords")
+                    case .camelCase: button.toolTip = L("tip.camelCase")
+                    case .titleCase: button.toolTip = L("tip.titleCase")
+                    case .sum: button.toolTip = L("tip.sum")
+                    case .invertSign: button.toolTip = L("tip.invertSign")
+                    case .dateSpecial: button.toolTip = L("tip.dateSpecial")
+                    case .dateSpecialPadded: button.toolTip = L("tip.dateSpecialPadded")
+                    case .wrapLines: button.toolTip = L("tip.wrapLines")
+                    case .splitAtText: button.toolTip = L("tip.splitAtText")
+                    case .toggleDateFormat: button.toolTip = L("tip.toggleDateFormat")
+                    case .randomLines: button.toolTip = L("tip.randomLines")
+                    case .sortLines: button.toolTip = L("tip.sortLines")
+                    case .uniqueLines: button.toolTip = L("tip.uniqueLines")
+                    case .joinWestern: button.toolTip = L("tip.joinWestern")
+                    case .join: button.toolTip = L("tip.join")
+                    case .joinAll: button.toolTip = L("tip.joinAll")
+                    case .beautify: button.toolTip = L("tip.beautify")
+                    case .minify: button.toolTip = L("tip.minify")
+                    case .minifyBody: button.toolTip = L("tip.minifyBody")
+                    case .removeBlankLines: button.toolTip = L("tip.removeBlankLines")
+                    case .spaceLines: button.toolTip = L("tip.spaceLines")
+                    case .addPeriod: button.toolTip = L("tip.addPeriod")
+                    case .removePeriod: button.toolTip = L("tip.removePeriod")
+                    case .addCommas: button.toolTip = L("tip.addCommas")
+                    case .removeCommas: button.toolTip = L("tip.removeCommas")
+                    case .removeList: button.toolTip = L("tip.removeList")
+                    case .number: button.toolTip = L("tip.number")
+                    case .alphabet: button.toolTip = L("tip.alphabet")
+                    default: button.toolTip = L("tip.default")
+                    }
+                    button.toolTip = L("tip.format", operation.title, button.toolTip ?? "")
+                buttons.append(button)
+            }
+            if title == "リスト" || title == "文字の整形" {
+                let button = PaletteButton(frame: .zero)
+                button.title = PaletteConfiguration.specialTitle(for: title)
+                button.tag = title == "リスト" ? PaletteConfiguration.listSpecialID : PaletteConfiguration.typographySpecialID
+                button.target = self
+                button.action = title == "リスト" ? #selector(showSpecialLists) : #selector(showTypography)
+                button.image = NSImage(systemSymbolName: "list.star", accessibilityDescription: nil)
+                button.imagePosition = .imageAbove
+                button.toolTip = title == "リスト" ? L("tip.specialLists") : L("tip.specialTypography")
+                configureDisplay(button)
+                buttons.append(button)
+            }
+            let rows = ResponsiveButtonGrid(buttons: buttons, buttonHeight: displayHeight)
+            buttonGrids.append(rows)
+            let group = NSBox()
+            group.title = PaletteConfiguration.displayName(for: title)
+            group.titleFont = .systemFont(ofSize: 12, weight: .semibold)
+            group.contentViewMargins = NSSize(width: 10, height: 10)
+            let groupContent = NSView()
+            group.contentView = groupContent
+            rows.translatesAutoresizingMaskIntoConstraints = false
+            groupContent.addSubview(rows)
+            NSLayoutConstraint.activate([
+                rows.leadingAnchor.constraint(equalTo: groupContent.leadingAnchor),
+                rows.trailingAnchor.constraint(equalTo: groupContent.trailingAnchor),
+                rows.topAnchor.constraint(equalTo: groupContent.topAnchor),
+                rows.bottomAnchor.constraint(equalTo: groupContent.bottomAnchor)
+            ])
+            paletteGroups.append((title, group, rows))
+            column.addArrangedSubview(group)
+            group.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true
+        }
+        message.font = .systemFont(ofSize: 11)
+        message.textColor = .secondaryLabelColor
+        column.addArrangedSubview(message)
+        permissionButton.bezelStyle = .rounded
+        permissionButton.refusesFirstResponder = true
+        column.addArrangedSubview(permissionButton)
+        columnInsets = [column.leadingAnchor.constraint(equalTo: document.leadingAnchor, constant: 16),
+                        column.trailingAnchor.constraint(equalTo: document.trailingAnchor, constant: -16)]
+        statusWidths = [message.widthAnchor.constraint(equalTo: column.widthAnchor),
+                        target.widthAnchor.constraint(equalTo: column.widthAnchor)]
+        NSLayoutConstraint.activate(statusWidths)
+        NSLayoutConstraint.activate(columnInsets)
+        NSLayoutConstraint.activate([
+            column.topAnchor.constraint(equalTo: document.topAnchor, constant: 14),
+
+            column.bottomAnchor.constraint(equalTo: document.bottomAnchor, constant: -14)
+        ])
+        if !panel.setFrameUsingName("TextPalettePosition") { panel.center() }
+        if PaletteDisplayMode.saved == .iconOnly {
+            var frame = panel.frame; frame.size.width = 72
+            panel.setFrame(frame, display: false)
+        }
+        if let screen = panel.screen ?? NSScreen.main {
+            var frame = panel.frame
+            frame.size.width = min(max(frame.width, panel.contentMinSize.width), screen.visibleFrame.width)
+            frame.size.height = min(max(frame.height, 300), screen.visibleFrame.height)
+            frame.origin.x = max(screen.visibleFrame.minX, min(frame.origin.x, screen.visibleFrame.maxX - frame.width))
+            frame.origin.y = max(screen.visibleFrame.minY, min(frame.origin.y, screen.visibleFrame.maxY - frame.height))
+            panel.setFrame(frame, display: false)
+        }
+        settingsViews.onChange = { [weak self] in
+            self?.applyVisibility()
+            self?.specialPanel?.reloadOptions()
+            self?.typographyPanel?.reloadOptions()
+            self?.shortcuts?.reloadConfiguration()
+        }
+        paletteShortcut = PaletteShortcut { [weak self] pid in self?.presentPalette(targetPID: pid) }
+        // Each hotkey field refuses the other owner's keys too.
+        shortcuts?.paletteCombo = { [weak self] in self?.paletteShortcut?.currentBinding?.combo }
+        paletteShortcut?.actionCombos = { [weak self] in self?.shortcuts?.actionCombos ?? [] }
+        ExcludedApps.shared.configure(explanation: L("excluded.explanation"))
+        shortcuts?.additionalPreferenceTabs = [(SettingsUI.launchTitle, paletteShortcut!.settingsView())] + settingsViews.tabs()
+            + [(L("tab.autoShow"), autoShow.makeSettingsView()), (ExcludedApps.title, SettingsUI.page(ExcludedApps.shared.page()))]
+            + [(SettingsSync.shared.tabTitle, MainActor.assumeIsolated { SettingsUI.page(SettingsSync.shared.sharingPage()) })]
+            + [(AboutSection.title, MainActor.assumeIsolated { AboutSection.view() })]
+        SettingsSync.shared.onImport = { [weak self] in
+            guard let self else { return }
+            self.profilePicker.selectItem(at: PaletteProfile.allCases.firstIndex(of: .saved)!)
+            self.setDisplay(PaletteDisplayMode.saved)
+            self.settingsViews.editProfile(.saved)
+            self.settingsViews.onChange?()
+            self.paletteShortcut?.reloadFromDefaults()
+            self.autoShow.reloadFromDefaults()
+            self.copyOnly = UserDefaults.standard.bool(forKey: "copyOnly")
+            self.statusItem.menu?.items.first { $0.action == #selector(self.toggleCopy(_:)) }?.state = self.copyOnly ? .on : .off
+            // The line, wrap and list panels read their last values when created.
+            for panel in [self.affixPanel, self.wrapPanel, self.splitPanel, self.specialPanel] as [NSPanel?] { panel?.orderOut(nil) }
+            self.affixPanel = nil; self.wrapPanel = nil; self.splitPanel = nil; self.specialPanel = nil
+            self.updateTarget()
+        }
+        migrateLegacySettingsSync()
+        SettingsSync.shared.start(.init(
+            keys: ["paletteProfile", "paletteDisplayMode", "specialTypographyOptions", "shortcutsDisabled",
+                   "copyOnly", "lineAffixPrefix", "lineAffixSuffix", "lineSplitSeparator", "lineSplitKeepSeparator", "lineSplitPrefix", "specialListStyle", "wrapCharacterCount",
+                   "autoShowEnabled", "autoShowApplications"],
+            prefixes: ["paletteVisible.", "specialListEnabled-", "shortcutDigit-", "shortcutScope-", "paletteInvocation."],
+            note: L("sharing.note"), perMac: L("sharing.perMac")))
+        // Excluded apps and MightyEdit itself get their keystrokes back (B21).
+        shortcuts?.hotkeysBlocked = { Self.frontAppBlocksHotkeys }
+        // Palette-only hotkeys follow the palette's visibility (show, hide, close, app hide).
+        shortcuts?.paletteVisible = { [weak self] in self?.panel?.isVisible == true }
+        for name in [NSApplication.didHideNotification, NSApplication.didUnhideNotification] {
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in self?.shortcuts?.refreshForPaletteVisibility() }
+        }
+        paletteShortcut?.hotkeysBlocked = { Self.frontAppBlocksHotkeys }
+        let refreshForFrontApp = { [weak self] in
+            self?.shortcuts?.refreshForFrontApp(); self?.paletteShortcut?.refreshForFrontApp(); self?.updateTarget()
+        }
+        ExcludedApps.shared.onChange = refreshForFrontApp
+        // Hotkeys are released and taken back as the front app crosses the excluded boundary.
+        NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { refreshForFrontApp() }
+        }
+        paletteShortcut?.refreshForFrontApp()
+        autoShow.showPalette = { [weak self] in
+            guard !isExcludedApp(NSWorkspace.shared.frontmostApplication) else { return }
+            self?.showPalette()
+        }
+        autoShow.externalAppActivated = { [weak self] app in
+            guard let self else { return }
+            if self.targetSession.activated(app.processIdentifier) { self.hidePalette() }
+        }
+        targetSession.bind(frontPID: NSWorkspace.shared.frontmostApplication?.processIdentifier)
+        autoShow.externalAppDeactivated = { [weak self] app in
+            self?.targetSession.departed(app.processIdentifier, frontPID: NSWorkspace.shared.frontmostApplication?.processIdentifier)
+        }
+        autoShow.start()
+        shortcuts?.actionEnabled = { id in
+            guard let operation = TextTransform(rawValue: id), TextTransform.specialLists.contains(operation) else { return true }
+            return PaletteConfiguration.listEnabled(id)
+        }
+        shortcuts?.reloadConfiguration()
+        applyVisibility()
+        updateCompactControls()
+        if PaletteDisplayMode.saved == .iconOnly {
+            var frame = panel.frame; frame.size.width = 72
+            panel.setFrame(frame, display: true)
+        }
+        let launchEvent = NSAppleEventManager.shared().currentAppleEvent
+        let loginLaunch = launchEvent?.paramDescriptor(forKeyword: keyAEPropData)?.enumCodeValue == keyAELaunchedAsLogInItem
+        if !loginLaunch && !StartupWindow.hidden { showPalette() }
+        updateTarget()
+        if PaletteDisplayMode.saved == .iconOnly {
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.panel.contentView?.layoutSubtreeIfNeeded()
+                self.panel.contentMinSize.width = 72
+                self.panel.minSize.width = 72
+                var frame = self.panel.frame; frame.size.width = 72
+                self.panel.setFrame(frame, display: true)
+
+            }
+        }
+        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.updateTarget() }
+    }
+
+    /// Excluded apps and MightyEdit itself get their keystrokes back (B21).
+    static var frontAppBlocksHotkeys: Bool {
+        let front = NSWorkspace.shared.frontmostApplication
+        return MainActor.assumeIsolated { ExcludedApps.shared.blocksHotkeys(bundleID: front?.bundleIdentifier, pid: front?.processIdentifier) }
+    }
+
+    func updateTarget() {
+        let boundApp = targetSession.targetPID.flatMap { NSRunningApplication(processIdentifier: $0) }
+        let name = boundApp?.localizedName ?? L("target.app")
+        let excluded = isExcludedApp(boundApp)
+        target.stringValue = excluded ? L("target.excluded", name) : L("target.normal", name, copyOnly ? L("target.copy") : L("target.replace"))
+        let trusted = AccessibilitySection.isTrusted
+        permissionButton.isHidden = trusted
+        if !trusted {
+            message.stringValue = AccessibilityText.text("blocked")
+        } else if wasTrusted != true {
+            message.stringValue = L("msg.permissionOK")
+        }
+        wasTrusted = trusted
+        if trusted && !excluded && message.stringValue == L("excluded.reason") { message.stringValue = L("app.ready") }
+        // Excluded apps are not inspected; the palette stays dimmed for them.
+        if panel.isVisible && (excluded || isExcludedApp(NSWorkspace.shared.frontmostApplication)) { panel.alphaValue = 0.45; return }
+        // Dim only on a definite read-only/non-text focus; unknown custom editors stay usable.
+        if panel.isVisible && trusted { panel.alphaValue = focusedTextIsEditable() == false ? 0.45 : 1 }
+        else { panel.alphaValue = 1 }
+    }
+
+    private func focusedTextIsEditable() -> Bool? {
+        guard let app = NSWorkspace.shared.frontmostApplication,
+              app.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return nil }
+        let ax = AXUIElementCreateApplication(app.processIdentifier)
+        AXUIElementSetMessagingTimeout(ax, 0.08)
+        var focused: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(ax, kAXFocusedUIElementAttribute as CFString, &focused) == .success,
+              let focused, CFGetTypeID(focused) == AXUIElementGetTypeID() else { return nil }
+        let element = unsafeBitCast(focused, to: AXUIElement.self)
+        var editable: CFTypeRef?
+        if AXUIElementCopyAttributeValue(element, "AXEditable" as CFString, &editable) == .success,
+           let editable = editable as? Bool { return editable }
+        for attribute in [kAXSelectedTextAttribute, kAXValueAttribute] {
+            var settable = DarwinBoolean(false)
+            if AXUIElementIsAttributeSettable(element, attribute as CFString, &settable) == .success, settable.boolValue { return true }
+        }
+        var role: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &role) == .success,
+              let role = role as? String else { return nil }
+        if ["AXStaticText", "AXImage", "AXButton", "AXToolbar", "AXMenuBar", "AXScrollArea", "AXOutline", "AXTable"].contains(role) { return false }
+        return nil
+    }
+
+    private func configureDisplay(_ button: PaletteButton) {
+        button.setAccessibilityLabel(button.title)
+        paletteButtons.append(button)
+    }
+
+    private var displayHeight: CGFloat {
+        switch PaletteDisplayMode.saved {
+        case .both: return 74
+        case .iconOnly: return 44
+        case .textOnly: return 48
+        }
+    }
+
+    @objc func changeDisplay(_ sender: NSMenuItem) {
+        guard let mode = PaletteDisplayMode(rawValue: sender.tag) else { return }
+        setDisplay(mode)
+    }
+    @objc func pickDisplay(_ sender: NSPopUpButton) {
+        guard let mode = PaletteDisplayMode(rawValue: sender.indexOfSelectedItem) else { return }
+        setDisplay(mode)
+    }
+    @objc func pickProfile(_ sender: NSPopUpButton) {
+        let profile = PaletteProfile.allCases[sender.indexOfSelectedItem]
+        UserDefaults.standard.set(profile.rawValue, forKey: "paletteProfile")
+        applyVisibility()
+    }
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        if sender === panel, UserDefaults.standard.object(forKey: "paletteResident") != nil,
+           !UserDefaults.standard.bool(forKey: "paletteResident") {
+            NSApp.terminate(nil)
+            return false
+        }
+        return true
+    }
+    func windowDidResize(_ notification: Notification) { updateCompactControls() }
+    func windowWillClose(_ notification: Notification) {
+        // isVisible is still true here; re-check once the close has finished.
+        guard notification.object as? NSWindow === panel else { return }
+        DispatchQueue.main.async { [weak self] in self?.shortcuts?.refreshForPaletteVisibility() }
+    }
+    private func updateCompactControls() {
+        guard let panel, let displayRow, let utilityRow else { return }
+        panel.contentView?.layoutSubtreeIfNeeded()
+        guard let grid = buttonGrids.first else { return }
+        let singleColumn = ResponsiveButtonGrid.columnCount(for: max(0, panel.frame.width - 56), buttonWidth: grid.preferredButtonWidth) == 1
+        let slim = PaletteDisplayMode.saved == .iconOnly && singleColumn
+        let minimumWindow = slim && panel.frame.width < 180
+        let iconSize: CGFloat = minimumWindow ? min(60, panel.frame.width - 12) : 32
+        headerIconSize.forEach { $0.constant = iconSize }
+        for (index, inset) in toolbarInsets.enumerated() {
+            inset.constant = (index == 0 ? 1 : -1) * (minimumWindow ? 6 : 12)
+        }
+        statusWidths.forEach { $0.isActive = !slim }
+        target.isHidden = slim
+        message.isHidden = slim
+        panel.contentView?.toolTip = slim ? target.stringValue + "\n" + message.stringValue : nil
+        for (index, inset) in columnInsets.enumerated() { inset.constant = (index == 0 ? 1 : -1) * (slim ? 4 : 16) }
+        for group in paletteGroups {
+            group.box.title = slim ? "" : PaletteConfiguration.displayName(for: group.name)
+            group.box.titlePosition = slim ? .noTitle : .atTop
+            group.box.contentViewMargins = NSSize(width: slim ? 2 : 10, height: slim ? 4 : 10)
+            group.box.toolTip = slim ? PaletteConfiguration.displayName(for: group.name) : nil
+        }
+        for button in utilityRow.arrangedSubviews.compactMap({ $0 as? NSButton }) {
+            button.imagePosition = slim ? .imageOnly : .imageLeading
+        }
+        permissionButton.image = NSImage(systemSymbolName: "lock.shield", accessibilityDescription: L("ax.accessibilitySettings"))
+        permissionButton.imagePosition = slim ? .imageOnly : .noImage
+        permissionButton.toolTip = L("tip.openAccessibility")
+        headerText.isHidden = singleColumn
+        if let labels = headerText as? NSStackView {
+            for label in labels.arrangedSubviews { label.isHidden = singleColumn }
+        }
+        displayPicker.isHidden = singleColumn
+        let hidePickers = singleColumn && PaletteDisplayMode.saved != .both
+        profilePicker.isHidden = hidePickers
+        displayRow.isHidden = hidePickers
+        if compactLayout != singleColumn {
+            NSLayoutConstraint.deactivate(singleColumn ? regularConstraints : compactConstraints)
+            NSLayoutConstraint.activate(singleColumn ? compactConstraints : regularConstraints)
+            compactLayout = singleColumn
+        }
+        displayRow.orientation = .horizontal
+        displayRow.alignment = .centerY
+        utilityRow.orientation = panel.frame.width < 220 ? .vertical : .horizontal
+        utilityRow.alignment = panel.frame.width < 220 ? .leading : .centerY
+    }
+    private func setDisplay(_ mode: PaletteDisplayMode) {
+        let wasSingleColumn = buttonGrids.first.map { ResponsiveButtonGrid.columnCount(for: $0.bounds.width, buttonWidth: $0.preferredButtonWidth) == 1 } ?? false
+        panel.contentMinSize.width = mode == .both ? 280 : (mode == .iconOnly ? 72 : 180)
+        panel.minSize.width = panel.contentMinSize.width
+        if panel.frame.width < panel.contentMinSize.width {
+            var frame = panel.frame; frame.size.width = panel.contentMinSize.width
+            panel.setFrame(frame, display: true)
+        }
+        displayPicker.selectItem(at: mode.rawValue)
+        UserDefaults.standard.set(mode.rawValue, forKey: "paletteDisplayMode")
+        for item in displayItems { item.state = item.tag == mode.rawValue ? .on : .off }
+        for button in paletteButtons { button.displayMode = mode }
+        for grid in buttonGrids { grid.buttonHeight = displayHeight }
+        updateCompactControls()
+        if mode == .iconOnly && wasSingleColumn {
+            var frame = panel.frame; frame.size.width = 72
+            panel.setFrame(frame, display: true)
+        }
+        updateCompactControls()
+    }
+
+    private func applyVisibility() {
+        for group in paletteGroups {
+            for button in group.grid.buttons { button.isHidden = !PaletteConfiguration.shown("button.\(button.tag)") }
+            group.grid.refreshVisibility()
+            group.box.isHidden = !PaletteConfiguration.shown(PaletteConfiguration.categoryKey(for: group.name)) || group.grid.buttons.allSatisfy { $0.isHidden }
+        }
+    }
+
+    @objc func showPreferences() { settingsViews.editProfile(.saved); shortcuts?.showPreferences() }
+
+    @objc func showTypography() {
+        targetSession.bind(frontPID: NSWorkspace.shared.frontmostApplication?.processIdentifier)
+        if typographyPanel == nil {
+            typographyPanel = TypographyPanel { [weak self] options in
+                guard let self else { return "" }
+                self.typographyOptions = options
+                let button = NSButton()
+                button.tag = TextTransform.specialTypography.rawValue
+                self.transform(button)
+                return self.message.stringValue
+            }
+        }
+        typographyPanel?.reloadOptions()
+        typographyPanel?.orderFrontRegardless()
+    }
+
+    @objc func showAffixPanel() {
+        targetSession.bind(frontPID: NSWorkspace.shared.frontmostApplication?.processIdentifier)
+        if affixPanel == nil {
+            affixPanel = LineToolsPanel { [weak self] prefix, suffix in
+                guard let self else { return "" }
+                guard self.targetSession.targetPID == NSWorkspace.shared.frontmostApplication?.processIdentifier else {
+                    self.message.stringValue = L("msg.targetChangedReselect")
+                    return self.message.stringValue
+                }
+                self.linePrefix = prefix; self.lineSuffix = suffix
+                let sender = NSButton(); sender.tag = TextTransform.affixLines.rawValue
+                self.transform(sender)
+                return self.message.stringValue
+            }
+        }
+        affixPanel?.makeKeyAndOrderFront(nil)
+    }
+
+    @objc func showSplitPanel() {
+        targetSession.bind(frontPID: NSWorkspace.shared.frontmostApplication?.processIdentifier)
+        if splitPanel == nil {
+            splitPanel = SplitLinesPanel { [weak self] separator, keepSeparator, prefix in
+                guard let self else { return "" }
+                guard self.targetSession.targetPID == NSWorkspace.shared.frontmostApplication?.processIdentifier else {
+                    self.message.stringValue = L("msg.targetChangedReselect")
+                    return self.message.stringValue
+                }
+                self.splitSeparator = separator; self.splitKeepsSeparator = keepSeparator; self.splitPrefix = prefix
+                let sender = NSButton(); sender.tag = TextTransform.splitAtText.rawValue
+                self.transform(sender)
+                return self.message.stringValue
+            }
+        }
+        splitPanel?.makeKeyAndOrderFront(nil)
+    }
+
+    @objc func showWrapPanel() {
+        targetSession.bind(frontPID: NSWorkspace.shared.frontmostApplication?.processIdentifier)
+        if wrapPanel == nil {
+            wrapPanel = WrapPanel { [weak self] count in
+                guard let self else { return "" }
+                self.wrapCount = count
+                let button = NSButton()
+                button.tag = TextTransform.wrapLines.rawValue
+                self.transform(button)
+                return self.message.stringValue
+            }
+        }
+        wrapPanel?.orderFrontRegardless()
+    }
+
+    /// Lists the date variants of the selection at the pointer; choosing one runs the transform again,
+    /// which re-reads the selection and replaces it only while it is still the same text.
+    private func showDateMenu(for text: String, operation: TextTransform) {
+        let candidates = DateTransform.variants(text, padded: operation == .dateSpecialPadded)
+        guard !candidates.isEmpty else { message.stringValue = L("msg.noDate"); return }
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        for (index, group) in candidates.enumerated() {
+            if index > 0 { menu.addItem(.separator()) }
+            for candidate in group {
+                let title = candidate.replacingOccurrences(of: "\n", with: " ")
+                let item = NSMenuItem(title: title.count > 80 ? String(title.prefix(80)) + "…" : title,
+                                      action: #selector(chooseDate(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = [text, candidate]
+                item.tag = operation.rawValue
+                menu.addItem(item)
+            }
+        }
+        menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
+    }
+
+    @objc private func chooseDate(_ sender: NSMenuItem) {
+        guard let pair = sender.representedObject as? [String], pair.count == 2 else { return }
+        dateChoice = (pair[0], pair[1])
+        let button = NSButton()
+        button.tag = sender.tag
+        transform(button)
+        dateChoice = nil
+    }
+
+    @objc func showSpecialLists() {
+        targetSession.bind(frontPID: NSWorkspace.shared.frontmostApplication?.processIdentifier)
+        if specialPanel == nil {
+            specialPanel = SpecialListPanel { [weak self] operation in
+                let sender = NSButton()
+                sender.tag = operation.rawValue
+                self?.transform(sender)
+                return self?.message.stringValue ?? ""
+            }
+        }
+        specialPanel?.reloadOptions()
+        specialPanel?.orderFrontRegardless()
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        showPalette()
+        return true
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if busy {
+            message.stringValue = L("msg.busyQuit")
+            return .terminateCancel
+        }
+        return .terminateNow
+    }
+
+    @objc func showPalette() {
+        presentPalette(targetPID: NSWorkspace.shared.frontmostApplication?.processIdentifier)
+    }
+
+    private func presentPalette(targetPID: pid_t?) {
+        guard let panel else { return }
+        targetSession.bind(frontPID: targetPID)
+        if NSWorkspace.shared.frontmostApplication?.processIdentifier == ProcessInfo.processInfo.processIdentifier,
+           let pid = targetSession.targetPID, let app = NSRunningApplication(processIdentifier: pid), !app.isTerminated {
+            app.activate(options: [.activateIgnoringOtherApps])
+        }
+        updateTarget()
+        // Menu-bar invocation over an excluded app shows the reason instead of acting.
+        if isExcludedApp(pid: targetSession.targetPID) { message.stringValue = L("excluded.reason") }
+        if panel.isMiniaturized { panel.deminiaturize(nil) }
+        if !NSScreen.screens.contains(where: { $0.visibleFrame.intersects(panel.frame) }) {
+            panel.center()
+        }
+        NSApp.unhideWithoutActivation()
+        panel.orderFrontRegardless()
+        shortcuts?.refreshForPaletteVisibility()
+    }
+    @objc func hidePalette() {
+        panel.orderOut(nil)
+        specialPanel?.orderOut(nil)
+        typographyPanel?.orderOut(nil)
+        wrapPanel?.orderOut(nil)
+        affixPanel?.orderOut(nil)
+        countPanel?.orderOut(nil)
+        shortcuts?.refreshForPaletteVisibility()
+    }
+    @objc func quit() { NSApp.terminate(nil) }
+    @objc func showAbout() {
+        let info = Bundle.main.infoDictionary ?? [:]
+        let version = info["CFBundleShortVersionString"] as? String ?? ""
+        let build = info["CFBundleVersion"] as? String ?? ""
+        NSApp.activate(ignoringOtherApps: true)
+        NSApp.orderFrontStandardAboutPanel(options: [.applicationName: "MightyEdit", .applicationVersion: "\(version) (\(build))",
+                                                     .credits: NSAttributedString(string: L("about.support"))])
+    }
+    @objc func toggleCopy(_ sender: NSMenuItem) {
+        copyOnly.toggle()
+        UserDefaults.standard.set(copyOnly, forKey: "copyOnly")
+        sender.state = copyOnly ? .on : .off
+        updateTarget()
+    }
+    @objc func openPermission() {
+        // Open only on explicit request. Never reissue the OS permission prompt.
+        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
+    }
+
+    @objc func revealApplication() {
+        NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL])
+    }
+
+    /// Web content: pastes over the real selection, then selects the result with ⇧← (the arrow keys count characters,
+    /// not the drifting AX indices). Queued transforms are dropped because the result cannot be read back.
+    private func pasteOverWebSelection(_ result: String, pid: pid_t, appName: String?, previous: [[NSPasteboard.PasteboardType: Data]]) {
+        pendingTransforms.removeAll()
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        guard pasteboard.setString(result, forType: .string) else { WebSelection.restore(previous); message.stringValue = L("msg.clipboardFailed"); return }
+        let change = pasteboard.changeCount
+        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid, !isExcludedApp(pid: pid),
+              WebSelection.sendKey(9, flags: .maskCommand, pid: pid) else {
+            WebSelection.restore(previous); message.stringValue = L("msg.noTarget"); return
+        }
+        busy = true
+        message.stringValue = L("msg.pasteSent", appName ?? L("target.appLong"))
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+            if NSWorkspace.shared.frontmostApplication?.processIdentifier == pid {
+                for _ in 0..<result.count { _ = WebSelection.sendKey(123, flags: .maskShift, pid: pid) }
+            }
+            // The target reads the clipboard asynchronously; restore after it has had time to paste.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.85) {
+                if pasteboard.changeCount == change { WebSelection.restore(previous) }
+                self?.busy = false
+            }
+        }
+    }
+
+    private func selectReplacement(in element: AXUIElement, application: AXUIElement,
+                                   pid: pid_t, original: CFRange, replacement: String,
+                                   expectedDocument: String?, attempts: Int = 25) {
+        // Retry every 30 ms (about 0.75 s in total) so a following hotkey can continue quickly.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) { [weak self] in
+            guard let self, NSWorkspace.shared.frontmostApplication?.processIdentifier == pid,
+                  !isExcludedApp(pid: pid) else { return }
+            var focused: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(application, kAXFocusedUIElementAttribute as CFString, &focused) == .success,
+                  let focused, CFEqual(focused, element) else { return }
+            var currentValue: CFTypeRef?
+            var current = CFRange()
+            guard AXUIElementCopyAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, &currentValue) == .success,
+                  let currentValue, CFGetTypeID(currentValue) == AXValueGetTypeID(),
+                  AXValueGetValue(unsafeBitCast(currentValue, to: AXValue.self), .cfRange, &current) else { return }
+            // Accessibility ranges use UTF-16 units, including for emoji.
+            var inserted = CFRange(location: original.location, length: replacement.utf16.count)
+            guard let insertedValue = AXValueCreate(.cfRange, &inserted) else { return }
+            var actual: CFTypeRef?
+            let contentMatches: Bool
+            if let expectedDocument {
+                contentMatches = AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &actual) == .success
+                    && (actual as? String) == expectedDocument
+            } else {
+                contentMatches = AXUIElementCopyParameterizedAttributeValue(element, kAXStringForRangeParameterizedAttribute as CFString,
+                                                                            insertedValue, &actual) == .success
+                    && (actual as? String) == replacement
+            }
+            let caretAtEnd = current.length == 0 && current.location == inserted.location + inserted.length
+            let alreadySelected = current.location == inserted.location && current.length == inserted.length
+            if contentMatches && (caretAtEnd || alreadySelected) {
+                if alreadySelected { return }
+                let status = AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, insertedValue)
+                var readback: CFTypeRef?
+                var selectedRange = CFRange()
+                if status == .success,
+                   AXUIElementCopyAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, &readback) == .success,
+                   let readback, CFGetTypeID(readback) == AXValueGetTypeID(),
+                   AXValueGetValue(unsafeBitCast(readback, to: AXValue.self), .cfRange, &selectedRange),
+                   selectedRange.location == inserted.location, selectedRange.length == inserted.length {
+                    self.message.stringValue = replacement.isEmpty ? L("msg.selectedEmpty") : L("msg.selected")
+                } else {
+                    self.message.stringValue = L("msg.reselectUnsupported")
+                }
+                return
+            }
+            // Do not take selection back after the user moves the caret or changes selection.
+            let unchanged = current.location == original.location && current.length == original.length
+            if attempts > 1 && (unchanged || caretAtEnd) {
+                self.selectReplacement(in: element, application: application, pid: pid, original: original,
+                                       replacement: replacement, expectedDocument: expectedDocument, attempts: attempts - 1)
+            }
+        }
+    }
+
+    @objc func transform(_ sender: NSButton) {
+        guard let operation = TextTransform(rawValue: sender.tag) else { return }
+        if busy {
+            if let app = NSWorkspace.shared.frontmostApplication,
+               app.processIdentifier != ProcessInfo.processInfo.processIdentifier,
+               !isExcludedApp(app), pendingTransforms.count < 8 {
+                pendingTransforms.append((sender.tag, app.processIdentifier))
+            }
+            return
+        }
+        guard AXIsProcessTrusted() else { updateTarget(); return }
+        guard let app = NSWorkspace.shared.frontmostApplication, app.processIdentifier != ProcessInfo.processInfo.processIdentifier else {
+            message.stringValue = L("msg.selectInApp"); return
+        }
+        // B21: check before reading the selection; panels and hotkeys all pass through here.
+        guard !isExcludedApp(app) else { message.stringValue = L("excluded.reason"); return }
+        if panel.isVisible || specialPanel?.isVisible == true || typographyPanel?.isVisible == true || wrapPanel?.isVisible == true || affixPanel?.isVisible == true {
+            guard targetSession.targetPID == app.processIdentifier else {
+                hidePalette()
+                message.stringValue = L("msg.targetChangedReopen")
+                return
+            }
+        }
+        let application = AXUIElementCreateApplication(app.processIdentifier)
+        AXUIElementSetMessagingTimeout(application, 1)
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(application, kAXFocusedUIElementAttribute as CFString, &value) == .success,
+              let value, CFGetTypeID(value) == AXUIElementGetTypeID() else {
+            message.stringValue = L("msg.noAccess"); return
+        }
+        let element = unsafeBitCast(value, to: AXUIElement.self)
+        // Web content (Safari, Chrome, Firefox, Electron apps such as Notion, Google Docs) cannot be read through AX
+        // reliably (measured in KakkoReplace): Safari's index ranges drift in long documents so AXSelectedText names
+        // other text, and Google Docs shows only a stand-in field holding one space. Its selection is copied with ⌘C.
+        let web = WebSelection.isWebContent(element)
+        var copiedClipboard: [[NSPasteboard.PasteboardType: Data]]?
+        let selectedText: String?
+        if web {
+            let copied = WebSelection.copy(pid: app.processIdentifier)
+            selectedText = copied?.text
+            copiedClipboard = copied?.previous
+        } else {
+            var selected: CFTypeRef?
+            selectedText = AXUIElementCopyAttributeValue(element, kAXSelectedTextAttribute as CFString, &selected) == .success ? selected as? String : nil
+        }
+        guard let text = selectedText, !text.isEmpty else {
+            if let copiedClipboard { WebSelection.restore(copiedClipboard) }
+            message.stringValue = L("msg.selectText"); return
+        }
+        if operation == .dateSpecial || operation == .dateSpecialPadded, dateChoice?.source != text {
+            if let copiedClipboard { WebSelection.restore(copiedClipboard) }
+            dateChoice = nil
+            showDateMenu(for: text, operation: operation)
+            return
+        }
+        if operation == .countText {
+            if let copiedClipboard { WebSelection.restore(copiedClipboard) }
+            countPanel?.close()
+            countPanel = LineToolsPanel(statistics: LineTools.statistics(text))
+            countPanel?.orderFrontRegardless()
+            return
+        }
+        let result: String
+        do {
+            if operation == .affixLines {
+                result = LineTools.affix(text, prefix: linePrefix, suffix: lineSuffix)
+            } else if operation == .specialTypography {
+                result = TypographyOption.applyAll(text, options: typographyOptions)
+            } else if operation == .wrapLines {
+                result = TextTransform.wrappedText(text, count: wrapCount)
+            } else if operation == .splitAtText {
+                result = LineTools.split(text, at: splitSeparator, keepSeparator: splitKeepsSeparator, prefix: splitPrefix)
+            } else if operation == .dateSpecial || operation == .dateSpecialPadded, let dateChoice {
+                self.dateChoice = nil
+                result = dateChoice.result
+            } else {
+                result = operation == .sum ? try TextTransform.summedText(text) : operation.apply(text)
+            }
+        } catch {
+            if let copiedClipboard { WebSelection.restore(copiedClipboard) }
+            message.stringValue = error.localizedDescription
+            return
+        }
+        guard result != text else {
+            if let copiedClipboard { WebSelection.restore(copiedClipboard) }
+            message.stringValue = L("msg.noChange"); return
+        }
+        let pasteboard = NSPasteboard.general
+        if copyOnly {
+            pasteboard.clearContents()
+            pasteboard.setString(result, forType: .string)
+            message.stringValue = L("msg.copied")
+            return
+        }
+        if let copiedClipboard {
+            pasteOverWebSelection(result, pid: app.processIdentifier, appName: app.localizedName, previous: copiedClipboard)
+            return
+        }
+        // Require a concrete nonempty range before sending Paste; never replace an entire field.
+        var rangeValue: CFTypeRef?
+        var range = CFRange()
+        guard AXUIElementCopyAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, &rangeValue) == .success,
+              let rangeValue, CFGetTypeID(rangeValue) == AXValueGetTypeID(),
+              AXValueGetValue(unsafeBitCast(rangeValue, to: AXValue.self), .cfRange, &range), range.length > 0 else {
+            message.stringValue = L("msg.noRange"); return
+        }
+        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier,
+              !isExcludedApp(NSWorkspace.shared.frontmostApplication),
+              let source = CGEventSource(stateID: .privateState),
+              let down = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: true),
+              let up = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: false) else {
+            message.stringValue = L("msg.noTarget"); return
+        }
+        // Confirm the document after Paste before changing the selection.
+        var documentValue: CFTypeRef?
+        var expectedDocument: String?
+        if AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &documentValue) == .success,
+           let document = documentValue as? String,
+           range.location >= 0, range.length <= document.utf16.count,
+           range.location <= document.utf16.count - range.length {
+            expectedDocument = (document as NSString).replacingCharacters(
+                in: NSRange(location: range.location, length: range.length), with: result)
+        }
+        // Save every available pasteboard representation; restore only if no later copy occurred.
+        let previous: [[NSPasteboard.PasteboardType: Data]] = (pasteboard.pasteboardItems ?? []).map { item in
+            var saved: [NSPasteboard.PasteboardType: Data] = [:]
+            for type in item.types { if let data = item.data(forType: type) { saved[type] = data } }
+            return saved
+        }
+        pasteboard.clearContents()
+        guard pasteboard.setString(result, forType: .string) else { message.stringValue = L("msg.clipboardFailed"); return }
+        let change = pasteboard.changeCount
+        down.flags = .maskCommand
+        up.flags = .maskCommand
+        busy = true
+        down.postToPid(app.processIdentifier)
+        up.postToPid(app.processIdentifier)
+        message.stringValue = L("msg.pasteSent", app.localizedName ?? L("target.appLong"))
+        selectReplacement(in: element, application: application, pid: app.processIdentifier,
+                          original: range, replacement: result, expectedDocument: expectedDocument)
+        // Finish as soon as the target shows the pasted text (polled every 20 ms); fall back to 1 s
+        // for apps whose document cannot be read back. The clipboard is restored only after that.
+        var inserted = CFRange(location: range.location, length: result.utf16.count)
+        let insertedValue = AXValueCreate(.cfRange, &inserted)
+        let deadline = Date().addingTimeInterval(1)
+        func pasteLanded() -> Bool {
+            var actual: CFTypeRef?
+            if let expectedDocument {
+                return AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &actual) == .success
+                    && (actual as? String) == expectedDocument
+            }
+            guard let insertedValue else { return false }
+            return AXUIElementCopyParameterizedAttributeValue(element, kAXStringForRangeParameterizedAttribute as CFString,
+                                                              insertedValue, &actual) == .success && (actual as? String) == result
+        }
+        // A queued hotkey continues on the reselected result, so wait for that selection too.
+        func resultSelected() -> Bool {
+            var current: CFTypeRef?
+            var selection = CFRange()
+            return AXUIElementCopyAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, &current) == .success
+                && current.map { CFGetTypeID($0) == AXValueGetTypeID() && AXValueGetValue(unsafeBitCast($0, to: AXValue.self), .cfRange, &selection) } == true
+                && selection.location == inserted.location && selection.length == inserted.length
+        }
+        func waitForPaste(_ finish: @escaping () -> Void) {
+            // A short grace period lets the app read the clipboard even after its text already matches.
+            if Date() >= deadline || (pasteLanded() && (pendingTransforms.isEmpty || resultSelected())) {
+                DispatchQueue.main.asyncAfter(deadline: .now() + (Date() >= deadline ? 0 : 0.05), execute: finish)
+            } else {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { waitForPaste(finish) }
+            }
+        }
+        waitForPaste { [weak self] in
+            if pasteboard.changeCount == change {
+                pasteboard.clearContents()
+                let items = previous.map { saved -> NSPasteboardItem in
+                    let item = NSPasteboardItem()
+                    for (type, data) in saved { item.setData(data, forType: type) }
+                    return item
+                }
+                if !items.isEmpty { pasteboard.writeObjects(items) }
+            }
+            guard let self else { return }
+            self.busy = false
+            guard !self.pendingTransforms.isEmpty else { return }
+            let next = self.pendingTransforms.removeFirst()
+            var currentFocus: CFTypeRef?
+            var currentText: CFTypeRef?
+            var currentRange: CFTypeRef?
+            var selection = CFRange()
+            guard next.pid == app.processIdentifier,
+                  NSWorkspace.shared.frontmostApplication?.processIdentifier == next.pid,
+                  !isExcludedApp(pid: next.pid),
+                  AXUIElementCopyAttributeValue(application, kAXFocusedUIElementAttribute as CFString, &currentFocus) == .success,
+                  let currentFocus, CFEqual(currentFocus, element),
+                  AXUIElementCopyAttributeValue(element, kAXSelectedTextAttribute as CFString, &currentText) == .success,
+                  AXUIElementCopyAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, &currentRange) == .success,
+                  let currentRange, CFGetTypeID(currentRange) == AXValueGetTypeID(),
+                  AXValueGetValue(unsafeBitCast(currentRange, to: AXValue.self), .cfRange, &selection),
+                  ContinuationSelection.matches(text: currentText as? String, location: selection.location,
+                                                length: selection.length, expected: result, start: range.location) else {
+                self.pendingTransforms.removeAll()
+                return
+            }
+            let queued = NSButton(); queued.tag = next.tag
+            self.transform(queued)
+            // A no-op or failed continuation must not leave actions for a later selection.
+            if !self.busy { self.pendingTransforms.removeAll() }
+        }
+    }
+}
+
+/// Selection handling for web content, shared in approach with KakkoReplace's Editor.
+private enum WebSelection {
+    /// Web content carries text markers or DOM attributes; Notion's page editor has only the DOM ones (measured).
+    static func isWebContent(_ element: AXUIElement) -> Bool {
+        var names: CFArray?
+        guard AXUIElementCopyAttributeNames(element, &names) == .success, let names = names as? [String] else { return false }
+        return names.contains { ["AXSelectedTextMarkerRange", "AXDOMClassList", "AXDOMIdentifier", "ChromeAXNodeId"].contains($0) }
+    }
+    /// Sends ⌘C and returns the copied text with the clipboard it replaced, or nil when nothing was copied
+    /// (no selection) — the clipboard is then left untouched.
+    static func copy(pid: pid_t) -> (text: String, previous: [[NSPasteboard.PasteboardType: Data]])? {
+        let pasteboard = NSPasteboard.general
+        let previous = items()
+        let before = pasteboard.changeCount
+        guard sendKey(8, flags: .maskCommand, pid: pid) else { return nil }
+        let deadline = Date().addingTimeInterval(0.5)
+        while pasteboard.changeCount == before, Date() < deadline { usleep(20_000) }
+        guard pasteboard.changeCount != before else { return nil }
+        return (pasteboard.string(forType: .string) ?? "", previous)
+    }
+    static func items() -> [[NSPasteboard.PasteboardType: Data]] {
+        (NSPasteboard.general.pasteboardItems ?? []).map { item in
+            var saved: [NSPasteboard.PasteboardType: Data] = [:]
+            for type in item.types { if let data = item.data(forType: type) { saved[type] = data } }
+            return saved
+        }
+    }
+    static func restore(_ saved: [[NSPasteboard.PasteboardType: Data]]) {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        let items = saved.map { entry -> NSPasteboardItem in
+            let item = NSPasteboardItem()
+            for (type, data) in entry { item.setData(data, forType: type) }
+            return item
+        }
+        if !items.isEmpty { pasteboard.writeObjects(items) }
+    }
+    static func sendKey(_ key: CGKeyCode, flags: CGEventFlags, pid: pid_t) -> Bool {
+        guard let source = CGEventSource(stateID: .privateState),
+              let down = CGEvent(keyboardEventSource: source, virtualKey: key, keyDown: true),
+              let up = CGEvent(keyboardEventSource: source, virtualKey: key, keyDown: false) else { return false }
+        down.flags = flags; up.flags = flags
+        down.postToPid(pid); up.postToPid(pid)
+        return true
+    }
+}
+
+/// One-time move from MightyEdit's own sync (before 0.2.29) to the shared SettingsSync.
+/// The device ID and last sync date carry over, so the first check does not take this Mac's own
+/// file for another Mac's and overwrite newer local settings.
+func migrateLegacySettingsSync() {
+    let defaults = UserDefaults.standard
+    for (old, new) in [("iCloudSyncDeviceID", "settingsSyncDeviceID"), ("iCloudSyncLastDate", "settingsSyncLastDate")] {
+        guard let value = defaults.object(forKey: old) else { continue }
+        if defaults.object(forKey: new) == nil { defaults.set(value, forKey: new) }
+        defaults.removeObject(forKey: old)
+    }
+    // The first version synced only to iCloud Drive/MightyEdit/Settings.plist.
+    let legacyICloudKey = "iCloudSyncEnabled"
+    guard defaults.bool(forKey: legacyICloudKey) else { return }
+    defaults.removeObject(forKey: legacyICloudKey)
+    guard defaults.string(forKey: "settingsSyncFolder") == nil else { return }
+    let legacy = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Mobile Documents/com~apple~CloudDocs/MightyEdit", isDirectory: true)
+    let old = legacy.appendingPathComponent("Settings.plist"), new = legacy.appendingPathComponent("MightyEdit-Settings.plist")
+    if FileManager.default.fileExists(atPath: old.path), !FileManager.default.fileExists(atPath: new.path) {
+        try? FileManager.default.moveItem(at: old, to: new)
+    }
+    defaults.set(legacy.path, forKey: "settingsSyncFolder")
+}
+
+/// 対象外アプリ (B21) checks for MightyEdit's main-thread code that is not marked @MainActor; the shared list is main-actor isolated.
+func isExcludedApp(_ app: NSRunningApplication?) -> Bool {
+    MainActor.assumeIsolated { ExcludedApps.shared.excludes(app?.bundleIdentifier) }
+}
+func isExcludedApp(pid: pid_t?) -> Bool { isExcludedApp(pid.flatMap { NSRunningApplication(processIdentifier: $0) }) }
+
+let app = NSApplication.shared
+SingleInstanceLaunch.enforce()
+let delegate = AppDelegate()
+app.delegate = delegate
+app.run()
+
+// Reused from KakkoReplace (BrowserSwitcher). Oldest process wins on simultaneous launch.
+private enum SingleInstanceLaunch {
+    static func enforce() {
+        let current = NSRunningApplication.current
+        guard let identifier = Bundle.main.bundleIdentifier else { return }
+        var candidates = NSRunningApplication.runningApplications(withBundleIdentifier: identifier)
+            .filter { !$0.isTerminated }
+        if !candidates.contains(where: { $0.processIdentifier == current.processIdentifier }) {
+            candidates.append(current)
+        }
+        candidates.sort {
+            let left = $0.launchDate ?? .distantPast
+            let right = $1.launchDate ?? .distantPast
+            return left == right ? $0.processIdentifier < $1.processIdentifier : left < right
+        }
+        guard let existing = candidates.first,
+              existing.processIdentifier != current.processIdentifier else { return }
+        existing.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
+        if let url = existing.bundleURL {
+            let configuration = NSWorkspace.OpenConfiguration()
+            configuration.activates = true
+            configuration.createsNewApplicationInstance = false
+            NSWorkspace.shared.openApplication(at: url, configuration: configuration) { _, _ in
+                exit(0)
+            }
+            // Allow the reopen Apple event to reach hidden/menu-bar applications.
+            RunLoop.main.run(until: Date().addingTimeInterval(2))
+        }
+        exit(0)
+    }
+}
+
+
+// Main-window header uses the same icon resource as the distributed app.
+private func currentAppIcon() -> NSImage {
+    let name = Bundle.main.object(forInfoDictionaryKey: "CFBundleIconFile") as? String ?? "AppIcon"
+    let filename = name.hasSuffix(".icns") ? name : name + ".icns"
+    if let url = Bundle.main.resourceURL?.appendingPathComponent(filename),
+       let image = NSImage(contentsOf: url) { return image }
+    return NSApp.applicationIconImage
+}
+/// Shown under the header icon: version, then build in parentheses (「1.4.5」「（15）」).
+private func appVersionText() -> String {
+    let info = Bundle.main.infoDictionary ?? [:]
+    let version = info["CFBundleShortVersionString"] as? String ?? ""
+    guard let build = info["CFBundleVersion"] as? String, !build.isEmpty, build != version else { return version }
+    let japanese = Bundle.main.preferredLocalizations.first?.hasPrefix("ja") ?? false
+    return version + "\n" + (japanese ? "（\(build)）" : "(\(build))")
+}
+private func appVersionLabel() -> NSTextField {
+    let label = NSTextField(labelWithString: appVersionText())
+    label.font = .systemFont(ofSize: 10)
+    label.textColor = .secondaryLabelColor
+    label.alignment = .center
+    label.maximumNumberOfLines = 2
+    return label
+}
+private func appHeader(_ title: String, subtitle: String = "", size: CGFloat = 44, showsVersion: Bool = true) -> NSStackView {
+    let icon = NSImageView(image: currentAppIcon())
+    icon.imageScaling = .scaleProportionallyUpOrDown
+    icon.setAccessibilityElement(false)
+    icon.widthAnchor.constraint(equalToConstant: size).isActive = true
+    icon.heightAnchor.constraint(equalToConstant: size).isActive = true
+    let label = NSTextField(wrappingLabelWithString: title)
+    label.font = .systemFont(ofSize: size == 44 ? 20 : 15, weight: .semibold)
+    let detail = NSTextField(wrappingLabelWithString: subtitle)
+    detail.font = .systemFont(ofSize: size == 44 ? 12 : 11)
+    detail.textColor = .secondaryLabelColor
+    let text = NSStackView(views: subtitle.isEmpty ? [label] : [label, detail])
+    text.orientation = .vertical; text.alignment = .leading; text.spacing = 4
+    let iconColumn = NSStackView(views: showsVersion ? [icon, appVersionLabel()] : [icon])
+    iconColumn.orientation = .vertical; iconColumn.alignment = .centerX; iconColumn.spacing = 4
+    let row = NSStackView(views: [iconColumn, text])
+    row.orientation = .horizontal; row.alignment = .centerY; row.spacing = 12
+    return row
+}
