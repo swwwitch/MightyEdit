@@ -18,6 +18,11 @@ root = Path(__file__).resolve().parent
 LANGS = ['ja', 'en', 'zh-Hans', 'ko']
 
 rows = r'''
+hotkey.search|機能名・ホットキーで検索|Search functions or hotkeys|搜索功能名称或快捷键|기능 이름 또는 단축키 검색
+hotkey.searchEmpty|該当する項目はありません|No matching items|没有匹配的项目|일치하는 항목이 없습니다
+op.removeClipboardText|クリップボードのテキストを削除|Remove Clipboard Text|删除剪贴板文本|클립보드 텍스트 제거
+tip.removeClipboardText|選択したテキストからクリップボードの文字列をすべて削除|Remove every exact occurrence of the clipboard text from the selection|从所选文本中删除所有与剪贴板文本完全匹配的内容|선택한 텍스트에서 클립보드 문자열과 정확히 일치하는 부분을 모두 제거
+msg.clipboardTextEmpty|削除する文字列を先にコピーしてください|Copy the text to remove first|请先拷贝要删除的文本|제거할 텍스트를 먼저 복사하세요
 app.ready|文字を選択して、ボタンをクリック|Select text, then click a button|选择文字，然后点击按钮|텍스트를 선택한 다음 버튼을 클릭하세요
 menu.hidePalette|パレットを隠す|Hide Palette|隐藏面板|팔레트 숨기기
 menu.settings|設定…|Settings…|设置…|설정…
@@ -230,7 +235,7 @@ hotkey.pause|一時停止|Pause|暂停|일시 정지
 hotkey.pauseUntilRelaunch|一時停止（再起動で解除）|Pause (until relaunch)|暂停（重新启动后解除）|일시 정지(다시 시작하면 해제)
 hotkey.reset|割り当てを初期値に戻す|Reset to Default Assignments|将分配恢复为默认值|할당을 기본값으로 재설정
 hotkey.failureNote|登録失敗：ほかのキーを選んでください|Registration failed: choose another key|注册失败：请选择其他按键|등록 실패: 다른 키를 선택하세요
-hotkey.note|「変更…」を押してから割り当てるキーを押します（⌘か⌃を含める。Escで取り消し）。「初期値に戻す」「割り当てを解除」も使えます。同じキーはほかの操作やパレット呼び出しに割り当てられません。登録できなかったときは欄の下に表示します。操作名の下の適用範囲は選ぶとすぐ保存します。「パレット表示中のみ」はパレットを隠している間はキーを登録せず、前面のアプリへそのまま通します。|Click Change… and press the keys to assign (include ⌘ or ⌃; Esc cancels). Reset to Default and Clear are also available. A key already used by another action or by Show palette cannot be assigned. A registration failure is shown under the field. The scope under each action name is saved as soon as you choose it. “Only While Palette Is Shown” leaves the key unregistered while the palette is hidden, so it goes straight to the front app.|点击“更改…”后按下要分配的按键（需包含 ⌘ 或 ⌃；按 Esc 取消）。也可使用“恢复默认”和“清除”。已用于其他操作或调出面板的按键无法分配。无法注册时会在栏下方显示。操作名称下方的适用范围在选择后立即保存。“仅在显示面板时”在面板隐藏期间不注册按键，按键会直接传给前台应用。|‘변경…’을 누른 다음 지정할 키를 누릅니다(⌘ 또는 ⌃ 포함, Esc로 취소). ‘기본값으로 되돌리기’와 ‘지우기’도 사용할 수 있습니다. 다른 동작이나 팔레트 호출에 쓰이는 키는 지정할 수 없습니다. 등록하지 못하면 필드 아래에 표시합니다. 동작 이름 아래의 적용 범위는 선택하는 즉시 저장됩니다. ‘팔레트가 표시된 동안만’은 팔레트가 숨겨진 동안 키를 등록하지 않으므로 키가 앞쪽 앱으로 그대로 전달됩니다.
+hotkey.note|ホットキー欄をクリックしてから割り当てるキーを押します（⌘か⌃を含める。Escで取り消し）。「初期値に戻す」「割り当てを解除」も使えます。同じキーはほかの操作やパレット呼び出しに割り当てられません。登録できなかったときは欄の下に表示します。操作名の下の適用範囲は選ぶとすぐ保存します。「パレット表示中のみ」はパレットを隠している間はキーを登録せず、前面のアプリへそのまま通します。|Click the hotkey field and press the keys to assign (include ⌘ or ⌃; Esc cancels). Reset to Default and Clear are also available. A key already used by another action or by Show palette cannot be assigned. A registration failure is shown under the field. The scope under each action name is saved as soon as you choose it. “Only While Palette Is Shown” leaves the key unregistered while the palette is hidden, so it goes straight to the front app.|点击快捷键栏后按下要分配的按键（需包含 ⌘ 或 ⌃；按 Esc 取消）。也可使用“恢复默认”和“清除”。已用于其他操作或调出面板的按键无法分配。无法注册时会在栏下方显示。操作名称下方的适用范围在选择后立即保存。“仅在显示面板时”在面板隐藏期间不注册按键，按键会直接传给前台应用。|단축키 필드를 클릭한 다음 지정할 키를 누릅니다(⌘ 또는 ⌃ 포함, Esc로 취소). ‘기본값으로 되돌리기’와 ‘지우기’도 사용할 수 있습니다. 다른 동작이나 팔레트 호출에 쓰이는 키는 지정할 수 없습니다. 등록하지 못하면 필드 아래에 표시합니다. 동작 이름 아래의 적용 범위는 선택하는 즉시 저장됩니다. ‘팔레트가 표시된 동안만’은 팔레트가 숨겨진 동안 키를 등록하지 않으므로 키가 앞쪽 앱으로 그대로 전달됩니다.
 hotkey.axScope|%@の適用範囲|Scope for %@|%@的适用范围|%@ 적용 범위
 hotkey.scopeTip|このホットキーが働く範囲。選ぶとすぐ保存します|Where this hotkey works. Saved as soon as you choose.|此快捷键的作用范围。选择后立即保存|이 단축키가 작동하는 범위. 선택하는 즉시 저장됩니다
 scope.global|すべてのアプリ|All Apps|所有应用|모든 앱

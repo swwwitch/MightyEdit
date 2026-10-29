@@ -1,3 +1,8 @@
+"hotkey.search" = "搜索功能名称或快捷键";
+"hotkey.searchEmpty" = "没有匹配的项目";
+"op.removeClipboardText" = "删除剪贴板文本";
+"tip.removeClipboardText" = "从所选文本中删除所有与剪贴板文本完全匹配的内容";
+"msg.clipboardTextEmpty" = "请先拷贝要删除的文本";
 "app.ready" = "选择文字，然后点击按钮";
 "menu.hidePalette" = "隐藏面板";
 "menu.settings" = "设置…";
@@ -210,7 +215,7 @@
 "hotkey.pauseUntilRelaunch" = "暂停（重新启动后解除）";
 "hotkey.reset" = "将分配恢复为默认值";
 "hotkey.failureNote" = "注册失败：请选择其他按键";
-"hotkey.note" = "点击“更改…”后按下要分配的按键（需包含 ⌘ 或 ⌃；按 Esc 取消）。也可使用“恢复默认”和“清除”。已用于其他操作或调出面板的按键无法分配。无法注册时会在栏下方显示。操作名称下方的适用范围在选择后立即保存。“仅在显示面板时”在面板隐藏期间不注册按键，按键会直接传给前台应用。";
+"hotkey.note" = "点击快捷键栏后按下要分配的按键（需包含 ⌘ 或 ⌃；按 Esc 取消）。也可使用“恢复默认”和“清除”。已用于其他操作或调出面板的按键无法分配。无法注册时会在栏下方显示。操作名称下方的适用范围在选择后立即保存。“仅在显示面板时”在面板隐藏期间不注册按键，按键会直接传给前台应用。";
 "hotkey.axScope" = "%@的适用范围";
 "hotkey.scopeTip" = "此快捷键的作用范围。选择后立即保存";
 "scope.global" = "所有应用";

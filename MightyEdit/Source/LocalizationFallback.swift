@@ -2,6 +2,11 @@
 // Japanese UI text for binaries without the app bundle (unit tests).
 enum LocalizationFallback {
     static let japanese: [String: String] = [
+        "hotkey.search": "機能名・ホットキーで検索",
+        "hotkey.searchEmpty": "該当する項目はありません",
+        "op.removeClipboardText": "クリップボードのテキストを削除",
+        "tip.removeClipboardText": "選択したテキストからクリップボードの文字列をすべて削除",
+        "msg.clipboardTextEmpty": "削除する文字列を先にコピーしてください",
         "app.ready": "文字を選択して、ボタンをクリック",
         "menu.hidePalette": "パレットを隠す",
         "menu.settings": "設定…",
@@ -214,7 +219,7 @@ enum LocalizationFallback {
         "hotkey.pauseUntilRelaunch": "一時停止（再起動で解除）",
         "hotkey.reset": "割り当てを初期値に戻す",
         "hotkey.failureNote": "登録失敗：ほかのキーを選んでください",
-        "hotkey.note": "「変更…」を押してから割り当てるキーを押します（⌘か⌃を含める。Escで取り消し）。「初期値に戻す」「割り当てを解除」も使えます。同じキーはほかの操作やパレット呼び出しに割り当てられません。登録できなかったときは欄の下に表示します。操作名の下の適用範囲は選ぶとすぐ保存します。「パレット表示中のみ」はパレットを隠している間はキーを登録せず、前面のアプリへそのまま通します。",
+        "hotkey.note": "ホットキー欄をクリックしてから割り当てるキーを押します（⌘か⌃を含める。Escで取り消し）。「初期値に戻す」「割り当てを解除」も使えます。同じキーはほかの操作やパレット呼び出しに割り当てられません。登録できなかったときは欄の下に表示します。操作名の下の適用範囲は選ぶとすぐ保存します。「パレット表示中のみ」はパレットを隠している間はキーを登録せず、前面のアプリへそのまま通します。",
         "hotkey.axScope": "%@の適用範囲",
         "hotkey.scopeTip": "このホットキーが働く範囲。選ぶとすぐ保存します",
         "scope.global": "すべてのアプリ",

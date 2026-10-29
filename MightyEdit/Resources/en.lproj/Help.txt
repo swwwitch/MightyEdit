@@ -116,8 +116,8 @@ MightyEdit converts text you select in other apps: removing line breaks, numberi
 
 ## Numbers and Periods
 ### Digit Grouping
-- **⌃,**: Add Commas
-- **⌃⌥,**: Remove Commas
+- **⌃⌥⌘,**: Add Commas
+- **⌃⌥⌘.**: Remove Commas
 - Converts between 1234567.89 and 1,234,567.89. Only the integer part of half-width numbers is affected; signs, decimals, surrounding text and line breaks are kept.
 - Commas in sentences and sequences such as 1,2,3 are not changed. CSV parsing and full-width digits are not supported.
 - Numbers that are clearly years, such as 2026年, 2026-10-06, 2026/10/6 or 西暦2026, are skipped. A standalone 2026 or 2026円 is treated as an ordinary number.
@@ -150,12 +150,12 @@ MightyEdit converts text you select in other apps: removing line breaks, numberi
 - **⌃7**: Markdown List
 - **⌃⌥1**: Date Special
 - **⌃⌥4**: ［A］ bracketed list
-- **⌃,**: Add Commas
-- **⌃⌥,**: Remove Commas
+- **⌃⌥⌘,**: Add Commas
+- **⌃⌥⌘.**: Remove Commas
 - **⌃⌘-**: Remove Line Breaks
 - **⌃⌥⌘-**: Remove All Line Breaks
 - **⌃⌥⇧⌘-**: Minify
-- **⌃⌘=**: Sum Numbers (on JIS keyboards, also press Shift to type =)
+- **⌃⌥⌘=**: Sum Numbers (on JIS keyboards, also press Shift to type =)
 - **⌃-**: Invert Sign
 ### Using Hotkeys
 - Select text in the target app, then press the key; it runs at once (only once while held). With the default scope “All Apps”, hotkeys work even while the palette is hidden.
@@ -164,7 +164,7 @@ MightyEdit converts text you select in other apps: removing line breaks, numberi
 - Enabling or disabling all hotkeys, pausing, turning off single actions and excluded apps work the same regardless of scope. Duplicate keys are detected even while the palette is hidden. “Reset to Default Assignments” also resets the scope to “All Apps”.
 ### Changing Hotkeys
 1. Open Settings… in the menu bar, or press **⌘,** while MightyEdit is the active app.
-2. On the Hotkeys tab, click Change… for an action and press the keys to assign (include ⌘ or ⌃; Esc cancels). The key is saved at once.
+2. On the Hotkeys tab, click the hotkey field for an action and press the keys to assign (include ⌘ or ⌃; Esc cancels). The key is saved at once.
 3. Reset to Default restores the original key and Clear removes it. Standard keys such as ⌘C and keys used by another action or by Show palette cannot be assigned; the reason appears under the field.
 - Pausing and resetting all assignments are also available. Existing assignments are kept. A registration failure appears under the action’s field. The Show palette key is changed with the same kind of field on Startup & Background.
 - Switch Button Style is at the top of the Hotkeys tab. The hotkeys for Wrap at Character Count and Batch Formatting open their windows.
@@ -200,7 +200,7 @@ MightyEdit converts text you select in other apps: removing line breaks, numberi
 
 ## Running in the Background and Quitting
 - When “Keep running after closing” is on (default) on the Startup & Background tab, the close button hides the palette; show it again or quit from the menu bar. When it is off, the close button quits MightyEdit. The window position is saved.
-- When “Hide from Dock and App Switcher” is on (default off) on the Startup & Background tab, MightyEdit stays out of the Dock and the ⌘Tab switcher even while the palette or Settings is open. Show it from the menu bar icon, the palette hotkey (default **⌃⌥⌘E**), or by opening the app again in Finder.
+- When “Hide from Dock and App Switcher” is on (default off) on the Startup & Background tab, MightyEdit appears in the Dock and ⌘Tab while a main or settings window exists, including minimized windows, and hides after all such windows close. Palettes alone do not show it. Show it from the menu bar icon, the palette hotkey (default **⌃⌥⌘E**), or by opening the app again in Finder.
 - If you open MightyEdit a second time, the running MightyEdit comes to the front and the new copy quits.
 - Quit MightyEdit from its menu bar menu or the app menu (**⌘Q** while MightyEdit is active).
 - About MightyEdit in the app menu shows the version and build.
@@ -225,3 +225,13 @@ MightyEdit converts text you select in other apps: removing line breaks, numberi
 - Support: see the README.
 - Help → Open the note Article opens Swwwitch’s note support magazine.
 - In the menu bar menu, the Help submenu contains MightyEdit Help and Open the note Article.
+
+Remove Clipboard Text (Other): Copy the string to remove, select the text to edit, then click the button. Removes all exact matches, including case and whitespace; not a regular expression. An empty or non-text clipboard leaves the selection unchanged. Normal replacement restores the clipboard; Copy Without Replacing copies the result.
+
+Remove Clipboard Text: the default hotkey is Option+Shift+Command+D. Change it in Settings > Hotkeys.
+
+## Dock visibility and application menus
+
+Even with Hide from Dock and App Switcher on, a main or settings window keeps the app in the Dock and ⌘Tab so its application menus remain available. Minimized windows stay listed. Close all such windows to hide the app; palettes alone do not show it. Your saved setting is preserved.
+
+In Settings > Hotkeys, search by function name or current hotkey, using symbols such as ⌃⌥⌘, or names such as Control+Option+Command+,. Clear the search to show all items. Click a key field to start recording immediately; there is no Change button.
